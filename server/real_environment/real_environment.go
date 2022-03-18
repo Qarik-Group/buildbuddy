@@ -363,14 +363,6 @@ func (r *RealEnv) SetXcodeLocator(xl interfaces.XcodeLocator) {
 	r.xcodeLocator = xl
 }
 
-func (r *RealEnv) SetCacheRedisClient(redisClient redis.UniversalClient) {
-	r.cacheRedisClient = redisClient
-}
-
-func (r *RealEnv) GetCacheRedisClient() redis.UniversalClient {
-	return r.cacheRedisClient
-}
-
 func (r *RealEnv) SetDefaultRedisClient(redisClient redis.UniversalClient) {
 	r.defaultRedisClient = redisClient
 }
