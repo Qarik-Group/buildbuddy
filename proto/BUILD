@@ -47,6 +47,12 @@ proto_library(
     srcs = [
         "cache.proto",
     ],
+    deps = [
+        ":remote_execution_proto",
+        "@com_google_protobuf//:duration_proto",
+        "@com_google_protobuf//:timestamp_proto",
+        "@go_googleapis//google/rpc:status_proto",
+    ],
 )
 
 proto_library(
@@ -661,6 +667,10 @@ go_proto_library(
     name = "cache_go_proto",
     importpath = "github.com/buildbuddy-io/buildbuddy/proto/cache",
     proto = ":cache_proto",
+    deps = [
+        ":remote_execution_go_proto",
+        "@go_googleapis//google/rpc:status_go_proto",
+    ],
 )
 
 go_proto_library(
