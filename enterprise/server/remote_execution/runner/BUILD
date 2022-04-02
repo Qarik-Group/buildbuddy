@@ -14,6 +14,7 @@ go_library(
         "//enterprise/server/remote_execution/containers/docker",
         "//enterprise/server/remote_execution/containers/firecracker",
         "//enterprise/server/remote_execution/containers/podman",
+        "//enterprise/server/remote_execution/executor/config",
         "//enterprise/server/remote_execution/platform",
         "//enterprise/server/remote_execution/vfs",
         "//enterprise/server/remote_execution/workspace",
@@ -46,6 +47,7 @@ go_test(
     srcs = ["runner_test.go"],
     deps = [
         ":runner",
+        "//enterprise/server/remote_execution/executor/config",
         "//enterprise/server/remote_execution/platform",
         "//enterprise/server/remote_execution/workspace",
         "//enterprise/server/tasksize",
@@ -56,6 +58,7 @@ go_test(
         "//server/testutil/testenv",
         "//server/testutil/testfs",
         "//server/util/status",
+        "//server/util/testing/flags",
         "@com_github_golang_protobuf//jsonpb:go_default_library_gen",
         "@com_github_golang_protobuf//proto:go_default_library",
         "@com_github_google_uuid//:uuid",

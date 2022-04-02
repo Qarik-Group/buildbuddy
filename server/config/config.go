@@ -711,10 +711,6 @@ func (c *Configurator) GetRemoteExecutionRedisClientConfig() *RedisClientConfig 
 	return nil
 }
 
-func (c *Configurator) GetExecutorConfig() *ExecutorConfig {
-	return &c.gc.Executor
-}
-
 func (c *Configurator) GetAPIConfig() *APIConfig {
 	if c.gc.API.EnableAPI {
 		return &c.gc.API

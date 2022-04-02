@@ -11,6 +11,7 @@ go_library(
         "//enterprise/server/remote_execution/container",
         "//enterprise/server/remote_execution/containers/firecracker",
         "//enterprise/server/remote_execution/dirtools",
+        "//enterprise/server/remote_execution/executor/config",
         "//enterprise/server/remote_execution/operation",
         "//enterprise/server/remote_execution/runner",
         "//enterprise/server/util/vfs_server",

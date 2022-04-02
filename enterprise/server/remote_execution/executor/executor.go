@@ -30,6 +30,7 @@ import (
 	"github.com/golang/protobuf/ptypes"
 	"github.com/prometheus/client_golang/prometheus"
 
+	executor_config "github.com/buildbuddy-io/buildbuddy/enterprise/server/remote_execution/executor/config"
 	espb "github.com/buildbuddy-io/buildbuddy/proto/execution_stats"
 	repb "github.com/buildbuddy-io/buildbuddy/proto/remote_execution"
 	durationpb "github.com/golang/protobuf/ptypes/duration"
@@ -72,7 +73,7 @@ type Options struct {
 }
 
 func NewExecutor(env environment.Env, id string, options *Options) (*Executor, error) {
-	executorConfig := env.GetConfigurator().GetExecutorConfig()
+	executorConfig := executor_config.ExecutorConfig()
 	if executorConfig == nil {
 		return nil, status.FailedPreconditionError("No executor config found")
 	}
@@ -251,7 +252,7 @@ func (s *Executor) ExecuteTaskAndStreamResults(ctx context.Context, task *repb.E
 		OutputFiles:        task.GetCommand().GetOutputFiles(),
 	}
 
-	if s.env.GetConfigurator().GetExecutorConfig().EnableVFS && r.PlatformProperties.EnableVFS {
+	if executor_config.ExecutorConfig().EnableVFS && r.PlatformProperties.EnableVFS {
 		// Unlike other "container" implementations, for Firecracker VFS is mounted inside the guest VM so we need to
 		// pass the layout information to the implementation.
 		if fc, ok := r.Container.Delegate.(*firecracker.FirecrackerContainer); ok {

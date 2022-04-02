@@ -109,7 +109,7 @@ func TestActionWithRunnerRecycling_Unauthenticated(t *testing.T) {
 func setup(t *testing.T) *rbetest.Env {
 	env := rbetest.NewRBETestEnv(t)
 	env.AddBuildBuddyServer()
-	env.AddExecutor()
+	env.AddExecutor(t)
 	// observe initial count so that we can get the diff at the end of the test
 	_ = tasksStarted(t)
 	return env

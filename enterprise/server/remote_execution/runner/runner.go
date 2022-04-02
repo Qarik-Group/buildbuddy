@@ -43,6 +43,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 
+	executor_config "github.com/buildbuddy-io/buildbuddy/enterprise/server/remote_execution/executor/config"
 	aclpb "github.com/buildbuddy-io/buildbuddy/proto/acl"
 	repb "github.com/buildbuddy-io/buildbuddy/proto/remote_execution"
 	uidpb "github.com/buildbuddy-io/buildbuddy/proto/user_id"
@@ -377,10 +378,7 @@ type Pool struct {
 }
 
 func NewPool(env environment.Env) (*Pool, error) {
-	executorConfig := env.GetConfigurator().GetExecutorConfig()
-	if executorConfig == nil {
-		return nil, status.FailedPreconditionError("No executor config found")
-	}
+	executorConfig := executor_config.ExecutorConfig()
 
 	podID, err := k8sPodID()
 	if err != nil {
@@ -564,7 +562,7 @@ func (p *Pool) add(ctx context.Context, r *CommandRunner) *labeledError {
 
 func (p *Pool) hostBuildRoot() string {
 	// If host root dir is explicitly configured, prefer that.
-	if hd := p.env.GetConfigurator().GetExecutorConfig().HostRootDirectory; hd != "" {
+	if hd := executor_config.ExecutorConfig().HostRootDirectory; hd != "" {
 		return filepath.Join(hd, "remotebuilds")
 	}
 	if p.podID == "" {
@@ -578,8 +576,8 @@ func (p *Pool) hostBuildRoot() string {
 	return fmt.Sprintf("/var/lib/kubelet/pods/%s/volumes/kubernetes.io~empty-dir/executor-data/remotebuilds", p.podID)
 }
 
-func (p *Pool) dockerOptions() *docker.DockerOptions {
-	cfg := p.env.GetConfigurator().GetExecutorConfig()
+func dockerOptions() *docker.DockerOptions {
+	cfg := executor_config.ExecutorConfig()
 	return &docker.DockerOptions{
 		Socket:                  cfg.DockerSocket,
 		EnableSiblingContainers: cfg.DockerSiblingContainers,
@@ -624,7 +622,7 @@ func (p *Pool) warmupImage(ctx context.Context, containerType platform.Container
 }
 
 func (p *Pool) WarmupImages() {
-	config := p.env.GetConfigurator().GetExecutorConfig()
+	config := executor_config.ExecutorConfig()
 	executorProps := platform.GetExecutorProperties(config)
 	// Give the pull up to 2 minute to succeed.
 	// In practice warmup take about 30 seconds for docker and 75 seconds for firecracker.
@@ -666,7 +664,7 @@ func (p *Pool) WarmupImages() {
 // The returned runner is considered "active" and will be killed if the
 // executor is shut down.
 func (p *Pool) Get(ctx context.Context, task *repb.ExecutionTask) (*CommandRunner, error) {
-	executorProps := platform.GetExecutorProperties(p.env.GetConfigurator().GetExecutorConfig())
+	executorProps := platform.GetExecutorProperties(executor_config.ExecutorConfig())
 	props := platform.ParseProperties(task)
 	// TODO: This mutates the task; find a cleaner way to do this.
 	if err := platform.ApplyOverrides(p.env, executorProps, props, task.GetCommand()); err != nil {
@@ -731,7 +729,7 @@ func (p *Pool) Get(ctx context.Context, task *repb.ExecutionTask) (*CommandRunne
 	}
 	var fs *vfs.VFS
 	var vfsServer *vfs_server.Server
-	enableVFS := p.env.GetConfigurator().GetExecutorConfig().EnableVFS && props.EnableVFS
+	enableVFS := executor_config.ExecutorConfig().EnableVFS && props.EnableVFS
 	// Firecracker requires mounting the FS inside the guest VM so we can't just swap out the directory in the runner.
 	if enableVFS && platform.ContainerType(props.WorkloadIsolationType) != platform.FirecrackerContainerType {
 		vfsDir := ws.Path() + "_vfs"
@@ -786,7 +784,7 @@ func (p *Pool) newContainer(ctx context.Context, props *platform.Properties, tas
 	var ctr container.CommandContainer
 	switch platform.ContainerType(props.WorkloadIsolationType) {
 	case platform.DockerContainerType:
-		opts := p.dockerOptions()
+		opts := dockerOptions()
 		opts.ForceRoot = props.DockerForceRoot
 		opts.DockerNetwork = props.DockerNetwork
 		ctr = docker.NewDockerContainer(
