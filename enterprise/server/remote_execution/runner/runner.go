@@ -378,7 +378,7 @@ type Pool struct {
 }
 
 func NewPool(env environment.Env) (*Pool, error) {
-	executorConfig := executor_config.ExecutorConfig()
+	executorConfig := executor_config.Get()
 
 	podID, err := k8sPodID()
 	if err != nil {
@@ -562,7 +562,7 @@ func (p *Pool) add(ctx context.Context, r *CommandRunner) *labeledError {
 
 func (p *Pool) hostBuildRoot() string {
 	// If host root dir is explicitly configured, prefer that.
-	if hd := executor_config.ExecutorConfig().HostRootDirectory; hd != "" {
+	if hd := executor_config.Get().HostRootDirectory; hd != "" {
 		return filepath.Join(hd, "remotebuilds")
 	}
 	if p.podID == "" {
@@ -577,7 +577,7 @@ func (p *Pool) hostBuildRoot() string {
 }
 
 func dockerOptions() *docker.DockerOptions {
-	cfg := executor_config.ExecutorConfig()
+	cfg := executor_config.Get()
 	return &docker.DockerOptions{
 		Socket:                  cfg.DockerSocket,
 		EnableSiblingContainers: cfg.DockerSiblingContainers,
@@ -622,7 +622,7 @@ func (p *Pool) warmupImage(ctx context.Context, containerType platform.Container
 }
 
 func (p *Pool) WarmupImages() {
-	config := executor_config.ExecutorConfig()
+	config := executor_config.Get()
 	executorProps := platform.GetExecutorProperties(config)
 	// Give the pull up to 2 minute to succeed.
 	// In practice warmup take about 30 seconds for docker and 75 seconds for firecracker.
@@ -664,7 +664,7 @@ func (p *Pool) WarmupImages() {
 // The returned runner is considered "active" and will be killed if the
 // executor is shut down.
 func (p *Pool) Get(ctx context.Context, task *repb.ExecutionTask) (*CommandRunner, error) {
-	executorProps := platform.GetExecutorProperties(executor_config.ExecutorConfig())
+	executorProps := platform.GetExecutorProperties(executor_config.Get())
 	props := platform.ParseProperties(task)
 	// TODO: This mutates the task; find a cleaner way to do this.
 	if err := platform.ApplyOverrides(p.env, executorProps, props, task.GetCommand()); err != nil {
@@ -729,7 +729,7 @@ func (p *Pool) Get(ctx context.Context, task *repb.ExecutionTask) (*CommandRunne
 	}
 	var fs *vfs.VFS
 	var vfsServer *vfs_server.Server
-	enableVFS := executor_config.ExecutorConfig().EnableVFS && props.EnableVFS
+	enableVFS := executor_config.Get().EnableVFS && props.EnableVFS
 	// Firecracker requires mounting the FS inside the guest VM so we can't just swap out the directory in the runner.
 	if enableVFS && platform.ContainerType(props.WorkloadIsolationType) != platform.FirecrackerContainerType {
 		vfsDir := ws.Path() + "_vfs"

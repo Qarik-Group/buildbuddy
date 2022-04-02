@@ -73,7 +73,7 @@ type Options struct {
 }
 
 func NewExecutor(env environment.Env, id string, options *Options) (*Executor, error) {
-	executorConfig := executor_config.ExecutorConfig()
+	executorConfig := executor_config.Get()
 	if executorConfig == nil {
 		return nil, status.FailedPreconditionError("No executor config found")
 	}
@@ -252,7 +252,7 @@ func (s *Executor) ExecuteTaskAndStreamResults(ctx context.Context, task *repb.E
 		OutputFiles:        task.GetCommand().GetOutputFiles(),
 	}
 
-	if executor_config.ExecutorConfig().EnableVFS && r.PlatformProperties.EnableVFS {
+	if executor_config.Get().EnableVFS && r.PlatformProperties.EnableVFS {
 		// Unlike other "container" implementations, for Firecracker VFS is mounted inside the guest VM so we need to
 		// pass the layout information to the implementation.
 		if fc, ok := r.Container.Delegate.(*firecracker.FirecrackerContainer); ok {

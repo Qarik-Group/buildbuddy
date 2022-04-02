@@ -121,7 +121,7 @@ func newRunnerPool(t *testing.T, env *testenv.TestEnv, cfg *config.RunnerPoolCon
 	flags.Set(t, "executor.runner_pool.max_runner_count", strconv.Itoa(cfg.MaxRunnerCount))
 	flags.Set(t, "executor.runner_pool.max_runner_disk_size_bytes", strconv.FormatInt(cfg.MaxRunnerDiskSizeBytes, 10))
 	flags.Set(t, "executor.runner_pool.max_runner_memory_usage_bytes", strconv.FormatInt(cfg.MaxRunnerMemoryUsageBytes, 10))
-	executor_config.ExecutorConfig().RunnerPool = *cfg
+	executor_config.Get().RunnerPool = *cfg
 	p, err := runner.NewPool(env)
 	require.NoError(t, err)
 	require.NotNil(t, p)
