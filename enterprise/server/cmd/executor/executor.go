@@ -18,7 +18,6 @@ import (
 	"github.com/buildbuddy-io/buildbuddy/enterprise/server/remote_execution/filecache"
 	"github.com/buildbuddy-io/buildbuddy/enterprise/server/scheduling/priority_task_scheduler"
 	"github.com/buildbuddy-io/buildbuddy/enterprise/server/scheduling/scheduler_client"
-	"github.com/buildbuddy-io/buildbuddy/enterprise/server/selfauth"
 	"github.com/buildbuddy-io/buildbuddy/server/config"
 	"github.com/buildbuddy-io/buildbuddy/server/environment"
 	"github.com/buildbuddy-io/buildbuddy/server/interfaces"
@@ -121,17 +120,10 @@ func GetConfiguredEnvironmentOrDie(configurator *config.Configurator, healthChec
 	}
 	realEnv.SetFileResolver(fileresolver.New(bundleFS, "enterprise"))
 
-	authConfigs := realEnv.GetConfigurator().GetAuthOauthProviders()
-	if realEnv.GetConfigurator().GetSelfAuthEnabled() {
-		authConfigs = append(
-			authConfigs,
-			selfauth.Provider(realEnv),
-		)
-	}
-	authenticator, err := auth.NewOpenIDAuthenticator(context.Background(), realEnv, authConfigs)
-	if err == nil {
-		realEnv.SetAuthenticator(authenticator)
-	} else {
+	if err := auth.Register(context.Background(), realEnv); err != nil {
+		if err := auth.RegisterNullAuth(realEnv); err != nil {
+			log.Fatalf("%v", err)
+		}
 		log.Infof("No authentication will be configured: %s", err)
 	}
 
