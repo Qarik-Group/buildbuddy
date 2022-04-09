@@ -1,4 +1,4 @@
-package runner_test
+package runner
 
 import (
 	"bytes"
@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/buildbuddy-io/buildbuddy/enterprise/server/remote_execution/platform"
-	"github.com/buildbuddy-io/buildbuddy/enterprise/server/remote_execution/runner"
 	"github.com/buildbuddy-io/buildbuddy/enterprise/server/remote_execution/workspace"
 	"github.com/buildbuddy-io/buildbuddy/enterprise/server/tasksize"
 	"github.com/buildbuddy-io/buildbuddy/server/config"
@@ -28,7 +27,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	executor_config "github.com/buildbuddy-io/buildbuddy/enterprise/server/remote_execution/executor/config"
 	repb "github.com/buildbuddy-io/buildbuddy/proto/remote_execution"
 	wkpb "github.com/buildbuddy-io/buildbuddy/proto/worker"
 )
@@ -41,7 +39,11 @@ const (
 )
 
 var (
-	defaultCfg = &config.RunnerPoolConfig{}
+	defaultCfg = &config.RunnerPoolConfig{
+		MaxRunnerCount:            *maxRunnerCount,
+		MaxRunnerDiskSizeBytes:    *maxRunnerDiskSizeBytes,
+		MaxRunnerMemoryUsageBytes: *maxRunnerMemoryUsageBytes,
+	}
 
 	noLimitsCfg = &config.RunnerPoolConfig{
 		MaxRunnerCount:            unlimited,
@@ -112,23 +114,22 @@ func withAuthenticatedUser(t *testing.T, ctx context.Context, userID string) con
 	return context.WithValue(ctx, "x-buildbuddy-jwt", jwt)
 }
 
-func mustRun(t *testing.T, r *runner.CommandRunner) {
+func mustRun(t *testing.T, r *CommandRunner) {
 	res := r.Run(context.Background())
 	require.NoError(t, res.Error)
 }
 
-func newRunnerPool(t *testing.T, env *testenv.TestEnv, cfg *config.RunnerPoolConfig) *runner.Pool {
+func newRunnerPool(t *testing.T, env *testenv.TestEnv, cfg *config.RunnerPoolConfig) *Pool {
 	flags.Set(t, "executor.runner_pool.max_runner_count", strconv.Itoa(cfg.MaxRunnerCount))
 	flags.Set(t, "executor.runner_pool.max_runner_disk_size_bytes", strconv.FormatInt(cfg.MaxRunnerDiskSizeBytes, 10))
 	flags.Set(t, "executor.runner_pool.max_runner_memory_usage_bytes", strconv.FormatInt(cfg.MaxRunnerMemoryUsageBytes, 10))
-	executor_config.Get().RunnerPool = *cfg
-	p, err := runner.NewPool(env)
+	p, err := NewPool(env)
 	require.NoError(t, err)
 	require.NotNil(t, p)
 	return p
 }
 
-func mustGet(t *testing.T, ctx context.Context, pool *runner.Pool, task *repb.ExecutionTask) *runner.CommandRunner {
+func mustGet(t *testing.T, ctx context.Context, pool *Pool, task *repb.ExecutionTask) *CommandRunner {
 	initialActiveCount := pool.ActiveRunnerCount()
 	r, err := pool.Get(ctx, task)
 	require.NoError(t, err)
@@ -137,7 +138,7 @@ func mustGet(t *testing.T, ctx context.Context, pool *runner.Pool, task *repb.Ex
 	return r
 }
 
-func mustAdd(t *testing.T, ctx context.Context, pool *runner.Pool, r *runner.CommandRunner) {
+func mustAdd(t *testing.T, ctx context.Context, pool *Pool, r *CommandRunner) {
 	initialActiveCount := pool.ActiveRunnerCount()
 
 	err := pool.Add(ctx, r)
@@ -146,7 +147,7 @@ func mustAdd(t *testing.T, ctx context.Context, pool *runner.Pool, r *runner.Com
 	require.Equal(t, initialActiveCount-1, pool.ActiveRunnerCount(), "active runner count should decrease when adding back to pool")
 }
 
-func mustAddWithoutEviction(t *testing.T, ctx context.Context, pool *runner.Pool, r *runner.CommandRunner) {
+func mustAddWithoutEviction(t *testing.T, ctx context.Context, pool *Pool, r *CommandRunner) {
 	initialPausedCount := pool.PausedRunnerCount()
 	initialCount := pool.RunnerCount()
 
@@ -162,7 +163,7 @@ func mustAddWithoutEviction(t *testing.T, ctx context.Context, pool *runner.Pool
 	)
 }
 
-func mustAddWithEviction(t *testing.T, ctx context.Context, pool *runner.Pool, r *runner.CommandRunner) {
+func mustAddWithEviction(t *testing.T, ctx context.Context, pool *Pool, r *CommandRunner) {
 	initialPausedCount := pool.PausedRunnerCount()
 	initialCount := pool.RunnerCount()
 
@@ -178,7 +179,7 @@ func mustAddWithEviction(t *testing.T, ctx context.Context, pool *runner.Pool, r
 	)
 }
 
-func mustGetPausedRunner(t *testing.T, ctx context.Context, pool *runner.Pool, task *repb.ExecutionTask) *runner.CommandRunner {
+func mustGetPausedRunner(t *testing.T, ctx context.Context, pool *Pool, task *repb.ExecutionTask) *CommandRunner {
 	initialPausedCount := pool.PausedRunnerCount()
 	initialCount := pool.RunnerCount()
 	r := mustGet(t, ctx, pool, task)
@@ -187,7 +188,7 @@ func mustGetPausedRunner(t *testing.T, ctx context.Context, pool *runner.Pool, t
 	return r
 }
 
-func mustGetNewRunner(t *testing.T, ctx context.Context, pool *runner.Pool, task *repb.ExecutionTask) *runner.CommandRunner {
+func mustGetNewRunner(t *testing.T, ctx context.Context, pool *Pool, task *repb.ExecutionTask) *CommandRunner {
 	initialPausedCount := pool.PausedRunnerCount()
 	initialCount := pool.RunnerCount()
 	r := mustGet(t, ctx, pool, task)

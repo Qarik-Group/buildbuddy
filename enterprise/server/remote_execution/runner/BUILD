@@ -14,7 +14,6 @@ go_library(
         "//enterprise/server/remote_execution/containers/docker",
         "//enterprise/server/remote_execution/containers/firecracker",
         "//enterprise/server/remote_execution/containers/podman",
-        "//enterprise/server/remote_execution/executor/config",
         "//enterprise/server/remote_execution/platform",
         "//enterprise/server/remote_execution/vfs",
         "//enterprise/server/remote_execution/workspace",
@@ -25,7 +24,6 @@ go_library(
         "//proto:user_id_go_proto",
         "//proto:vfs_go_proto",
         "//proto:worker_go_proto",
-        "//server/config",
         "//server/environment",
         "//server/interfaces",
         "//server/metrics",
@@ -45,9 +43,8 @@ go_library(
 go_test(
     name = "runner_test",
     srcs = ["runner_test.go"],
+    embed = [":runner"],
     deps = [
-        ":runner",
-        "//enterprise/server/remote_execution/executor/config",
         "//enterprise/server/remote_execution/platform",
         "//enterprise/server/remote_execution/workspace",
         "//enterprise/server/tasksize",

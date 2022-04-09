@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"math"
@@ -29,7 +30,6 @@ import (
 	"github.com/buildbuddy-io/buildbuddy/enterprise/server/remote_execution/workspace"
 	"github.com/buildbuddy-io/buildbuddy/enterprise/server/tasksize"
 	"github.com/buildbuddy-io/buildbuddy/enterprise/server/util/vfs_server"
-	"github.com/buildbuddy-io/buildbuddy/server/config"
 	"github.com/buildbuddy-io/buildbuddy/server/environment"
 	"github.com/buildbuddy-io/buildbuddy/server/interfaces"
 	"github.com/buildbuddy-io/buildbuddy/server/metrics"
@@ -43,13 +43,31 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 
-	executor_config "github.com/buildbuddy-io/buildbuddy/enterprise/server/remote_execution/executor/config"
 	aclpb "github.com/buildbuddy-io/buildbuddy/proto/acl"
 	repb "github.com/buildbuddy-io/buildbuddy/proto/remote_execution"
 	uidpb "github.com/buildbuddy-io/buildbuddy/proto/user_id"
 	vfspb "github.com/buildbuddy-io/buildbuddy/proto/vfs"
 	wkpb "github.com/buildbuddy-io/buildbuddy/proto/worker"
 	dockerclient "github.com/docker/docker/client"
+)
+
+var (
+	rootDirectory           = flag.String("executor.root_directory", "/tmp/buildbuddy/remote_build", "The root directory to use for build files.")
+	hostRootDirectory       = flag.String("executor.host_root_directory", "", "Path on the host where the executor container root directory is mounted.")
+	dockerMountMode         = flag.String("executor.docker_mount_mode", "", "Sets the mount mode of volumes mounted to docker images. Useful if running on SELinux https://www.projectatomic.io/blog/2015/06/using-volumes-with-docker-can-cause-problems-with-selinux/")
+	dockerNetHost           = flag.Bool("executor.docker_net_host", false, "Sets --net=host on the docker command. Intended for local development only.")
+	dockerCapAdd            = flag.String("docker_cap_add", "", "Sets --cap-add= on the docker command. Comma separated.")
+	dockerSiblingContainers = flag.Bool("executor.docker_sibling_containers", false, "If set, mount the configured Docker socket to containers spawned for each action, to enable Docker-out-of-Docker (DooD). Takes effect only if docker_socket is also set. Should not be set by executors that can run untrusted code.")
+	dockerInheritUserIDs    = flag.Bool("executor.docker_inherit_user_ids", false, "If set, run docker containers using the same uid and gid as the user running the executor process.")
+	podmanRuntime           = flag.String("podman_runtime", "", "Enables running podman with other runtimes, like gVisor (runsc).")
+	warmupTimeoutSecs       = flag.Int64("executor.warmup_timeout_secs", 120, "The default time (in seconds) to wait for an executor to warm up i.e. download the default docker image. Default is 120s")
+	maxRunnerCount          = flag.Int("executor.runner_pool.max_runner_count", 0, "Maximum number of recycled RBE runners that can be pooled at once. Defaults to a value derived from estimated CPU usage, max RAM, allocated CPU, and allocated memory.")
+	// How big a runner's workspace is allowed to get before we decide that it
+	// can't be added to the pool and must be cleaned up instead.
+	maxRunnerDiskSizeBytes = flag.Int64("executor.runner_pool.max_runner_disk_size_bytes", 16e9, "Maximum disk size for a recycled runner; runners exceeding this threshold are not recycled. Defaults to 16GB.")
+	// How much memory a runner is allowed to use before we decide that it
+	// can't be added to the pool and must be cleaned up instead.
+	maxRunnerMemoryUsageBytes = flag.Int64("executor.runner_pool.max_runner_memory_usage_bytes", tasksize.WorkflowMemEstimate, "Maximum memory usage for a recycled runner; runners exceeding this threshold are not recycled. Defaults to 1/10 of total RAM allocated to the executor. (Only supported for Docker-based executors).")
 )
 
 const (
@@ -72,12 +90,6 @@ const (
 	// Allowed time to spend trying to pause a runner and add it to the pool.
 	runnerRecycleTimeout = 30 * time.Second
 
-	// How big a runner's workspace is allowed to get before we decide that it
-	// can't be added to the pool and must be cleaned up instead.
-	defaultRunnerDiskSizeLimitBytes = 16e9
-	// How much memory a runner is allowed to use before we decide that it
-	// can't be added to the pool and must be cleaned up instead.
-	defaultRunnerMemoryLimitBytes = tasksize.WorkflowMemEstimate
 	// Memory usage estimate multiplier for pooled runners, relative to the
 	// default memory estimate for execution tasks.
 	runnerMemUsageEstimateMultiplierBytes = 6.5
@@ -378,20 +390,18 @@ type Pool struct {
 }
 
 func NewPool(env environment.Env) (*Pool, error) {
-	executorConfig := executor_config.Get()
-
 	podID, err := k8sPodID()
 	if err != nil {
 		return nil, status.FailedPreconditionErrorf("Failed to determine k8s pod ID: %s", err)
 	}
 
 	var dockerClient *dockerclient.Client
-	if executorConfig.DockerSocket != "" {
-		_, err := os.Stat(executorConfig.DockerSocket)
+	if platform.DockerSocket() != "" {
+		_, err := os.Stat(platform.DockerSocket())
 		if os.IsNotExist(err) {
-			return nil, status.FailedPreconditionErrorf("Docker socket %q not found", executorConfig.DockerSocket)
+			return nil, status.FailedPreconditionErrorf("Docker socket %q not found", platform.DockerSocket())
 		}
-		dockerSocket := executorConfig.DockerSocket
+		dockerSocket := platform.DockerSocket()
 		dockerClient, err = dockerclient.NewClientWithOpts(
 			dockerclient.WithHost(fmt.Sprintf("unix://%s", dockerSocket)),
 			dockerclient.WithAPIVersionNegotiation(),
@@ -407,11 +417,15 @@ func NewPool(env environment.Env) (*Pool, error) {
 		imageCacheAuth: container.NewImageCacheAuthenticator(container.ImageCacheAuthenticatorOpts{}),
 		podID:          podID,
 		dockerClient:   dockerClient,
-		buildRoot:      executorConfig.GetRootDirectory(),
+		buildRoot:      *rootDirectory,
 		runners:        []*CommandRunner{},
 	}
-	p.setLimits(&executorConfig.RunnerPool)
+	p.setLimits()
 	return p, nil
+}
+
+func (p *Pool) GetBuildRoot() string {
+	return p.buildRoot
 }
 
 // Add pauses the runner and makes it available to be returned from the pool
@@ -562,8 +576,8 @@ func (p *Pool) add(ctx context.Context, r *CommandRunner) *labeledError {
 
 func (p *Pool) hostBuildRoot() string {
 	// If host root dir is explicitly configured, prefer that.
-	if hd := executor_config.Get().HostRootDirectory; hd != "" {
-		return filepath.Join(hd, "remotebuilds")
+	if *hostRootDirectory != "" {
+		return filepath.Join(*hostRootDirectory, "remotebuilds")
 	}
 	if p.podID == "" {
 		// Probably running on bare metal -- return the build root directly.
@@ -577,14 +591,13 @@ func (p *Pool) hostBuildRoot() string {
 }
 
 func dockerOptions() *docker.DockerOptions {
-	cfg := executor_config.Get()
 	return &docker.DockerOptions{
-		Socket:                  cfg.DockerSocket,
-		EnableSiblingContainers: cfg.DockerSiblingContainers,
-		UseHostNetwork:          cfg.DockerNetHost,
-		DockerMountMode:         cfg.DockerMountMode,
-		DockerCapAdd:            cfg.DockerCapAdd,
-		InheritUserIDs:          cfg.DockerInheritUserIDs,
+		Socket:                  platform.DockerSocket(),
+		EnableSiblingContainers: *dockerSiblingContainers,
+		UseHostNetwork:          *dockerNetHost,
+		DockerMountMode:         *dockerMountMode,
+		DockerCapAdd:            *dockerCapAdd,
+		InheritUserIDs:          *dockerInheritUserIDs,
 	}
 }
 
@@ -622,24 +635,16 @@ func (p *Pool) warmupImage(ctx context.Context, containerType platform.Container
 }
 
 func (p *Pool) WarmupImages() {
-	config := executor_config.Get()
-	executorProps := platform.GetExecutorProperties(config)
+	executorProps := platform.GetExecutorProperties()
 	// Give the pull up to 2 minute to succeed.
 	// In practice warmup take about 30 seconds for docker and 75 seconds for firecracker.
-	timeout := 2 * time.Minute
-	if config.WarmupTimeoutSecs > 0 {
-		timeout = time.Duration(config.WarmupTimeoutSecs) * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*warmupTimeoutSecs)*time.Second)
 	defer cancel()
 
 	eg, ctx := errgroup.WithContext(ctx)
 	for _, containerType := range executorProps.SupportedIsolationTypes {
 		containerType := containerType
-		image := platform.DefaultContainerImage
-		if config.DefaultImage != "" {
-			image = config.DefaultImage
-		}
+		image := platform.DefaultImage()
 		eg.Go(func() error {
 			return p.warmupImage(ctx, containerType, image)
 		})
@@ -664,7 +669,7 @@ func (p *Pool) WarmupImages() {
 // The returned runner is considered "active" and will be killed if the
 // executor is shut down.
 func (p *Pool) Get(ctx context.Context, task *repb.ExecutionTask) (*CommandRunner, error) {
-	executorProps := platform.GetExecutorProperties(executor_config.Get())
+	executorProps := platform.GetExecutorProperties()
 	props := platform.ParseProperties(task)
 	// TODO: This mutates the task; find a cleaner way to do this.
 	if err := platform.ApplyOverrides(p.env, executorProps, props, task.GetCommand()); err != nil {
@@ -729,7 +734,7 @@ func (p *Pool) Get(ctx context.Context, task *repb.ExecutionTask) (*CommandRunne
 	}
 	var fs *vfs.VFS
 	var vfsServer *vfs_server.Server
-	enableVFS := executor_config.Get().EnableVFS && props.EnableVFS
+	enableVFS := props.EnableVFS
 	// Firecracker requires mounting the FS inside the guest VM so we can't just swap out the directory in the runner.
 	if enableVFS && platform.ContainerType(props.WorkloadIsolationType) != platform.FirecrackerContainerType {
 		vfsDir := ws.Path() + "_vfs"
@@ -792,12 +797,11 @@ func (p *Pool) newContainer(ctx context.Context, props *platform.Properties, tas
 			p.hostBuildRoot(), opts,
 		)
 	case platform.PodmanContainerType:
-		cfg := p.env.GetConfigurator().GetExecutorConfig()
 		opts := &podman.PodmanOptions{
 			ForceRoot: props.DockerForceRoot,
 			Network:   props.DockerNetwork,
-			CapAdd:    cfg.DockerCapAdd,
-			Runtime:   cfg.PodmanRuntime,
+			CapAdd:    *dockerCapAdd,
+			Runtime:   *podmanRuntime,
 		}
 		ctr = podman.NewPodmanCommandContainer(p.env, p.imageCacheAuth, props.ContainerImage, p.buildRoot, opts)
 	case platform.FirecrackerContainerType:
@@ -1039,11 +1043,11 @@ func (p *Pool) TryRecycle(r *CommandRunner, finishedCleanly bool) {
 	recycled = true
 }
 
-func (p *Pool) setLimits(cfg *config.RunnerPoolConfig) {
+func (p *Pool) setLimits() {
 	totalRAMBytes := int64(float64(resources.GetAllocatedRAMBytes()) * tasksize.MaxResourceCapacityRatio)
 	estimatedRAMBytes := int64(float64(tasksize.DefaultMemEstimate) * runnerMemUsageEstimateMultiplierBytes)
 
-	count := cfg.MaxRunnerCount
+	count := *maxRunnerCount
 	if count == 0 {
 		// Don't allow more paused runners than the max number of tasks that can be
 		// executing at once, if they were all using the default memory estimate.
@@ -1055,21 +1059,16 @@ func (p *Pool) setLimits(cfg *config.RunnerPoolConfig) {
 		count = int(math.MaxInt32)
 	}
 
-	mem := cfg.MaxRunnerMemoryUsageBytes
-	if mem == 0 {
-		mem = defaultRunnerMemoryLimitBytes
-		if mem > totalRAMBytes {
-			mem = totalRAMBytes
-		}
+	mem := *maxRunnerMemoryUsageBytes
+	if mem > totalRAMBytes {
+		mem = totalRAMBytes
 	} else if mem < 0 {
 		// < 0 means no limit.
 		mem = math.MaxInt64
 	}
 
-	disk := cfg.MaxRunnerDiskSizeBytes
-	if disk == 0 {
-		disk = defaultRunnerDiskSizeLimitBytes
-	} else if disk < 0 {
+	disk := *maxRunnerDiskSizeBytes
+	if disk < 0 {
 		// < 0 means no limit.
 		disk = math.MaxInt64
 	}
