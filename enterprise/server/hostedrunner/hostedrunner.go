@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/buildbuddy-io/buildbuddy/enterprise/server/remote_execution/operation"
@@ -141,6 +142,9 @@ func (r *runnerService) createAction(ctx context.Context, req *rnpb.RunRequest, 
 		"--bazel_sub_command=" + req.GetBazelCommand(),
 		"--invocation_id=" + invocationID,
 	}
+	if strings.HasPrefix(req.GetBazelCommand(), "run ") {
+		args = append(args, "--record_run_metadata")
+	}
 	if req.GetRepoState().GetCommitSha() != "" {
 		args = append(args, "--target_commit_sha="+req.GetRepoState().GetCommitSha())
 	} else {
@@ -158,6 +162,14 @@ func (r *runnerService) createAction(ctx context.Context, req *rnpb.RunRequest, 
 		affinityKey = repoURL.String()
 	}
 
+	pool := platform.DefaultPoolValue
+	// Hosted Bazel shares the same pool with workflows.
+	if cfg := r.env.GetConfigurator().GetRemoteExecutionConfig(); cfg != nil && cfg.WorkflowsPoolName != "" {
+		pool = cfg.WorkflowsPoolName
+	}
+
+	log.Warningf("remote run args: %s", args)
+
 	cmd := &repb.Command{
 		EnvironmentVariables: []*repb.Command_EnvironmentVariable{
 			{Name: "BUILDBUDDY_API_KEY", Value: apiKey},
@@ -170,7 +182,7 @@ func (r *runnerService) createAction(ctx context.Context, req *rnpb.RunRequest, 
 		Arguments: args,
 		Platform: &repb.Platform{
 			Properties: []*repb.Platform_Property{
-				{Name: "Pool", Value: "workflows"},
+				{Name: "Pool", Value: pool},
 				{Name: platform.HostedBazelAffinityKeyPropertyName, Value: affinityKey},
 				{Name: "container-image", Value: RunnerContainerImage},
 				{Name: "recycle-runner", Value: "true"},
