@@ -11,7 +11,7 @@ go_library(
         "//proto:raft_service_go_proto",
         "//server/gossip",
         "//server/util/log",
-        "@com_github_golang_protobuf//proto:go_default_library",
         "@com_github_hashicorp_serf//serf",
+        "@org_golang_google_protobuf//proto",
     ],
 )

@@ -22,10 +22,11 @@ import (
 	"github.com/buildbuddy-io/buildbuddy/server/util/status"
 	"github.com/buildbuddy-io/buildbuddy/server/util/tracing"
 	"github.com/go-redis/redis/v8"
-	"github.com/golang/protobuf/proto"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/protobuf/encoding/prototext"
+	"google.golang.org/protobuf/proto"
 
 	akpb "github.com/buildbuddy-io/buildbuddy/proto/api_key"
 	repb "github.com/buildbuddy-io/buildbuddy/proto/remote_execution"
@@ -248,7 +249,8 @@ func (h *executorHandle) Serve(ctx context.Context) error {
 					}
 				}
 			} else {
-				log.Warningf("Invalid message from executor:\n%q", proto.MarshalTextString(req))
+				out, _ := prototext.Marshal(req)
+				log.Warningf("Invalid message from executor:\n%q", string(out))
 				return status.InternalErrorf("message from executor did not contain any data")
 			}
 		case <-checkCredentialsTicker.C:

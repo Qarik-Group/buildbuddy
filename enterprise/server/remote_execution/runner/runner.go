@@ -37,11 +37,11 @@ import (
 	"github.com/buildbuddy-io/buildbuddy/server/util/log"
 	"github.com/buildbuddy-io/buildbuddy/server/util/perms"
 	"github.com/buildbuddy-io/buildbuddy/server/util/status"
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	aclpb "github.com/buildbuddy-io/buildbuddy/proto/acl"
 	repb "github.com/buildbuddy-io/buildbuddy/proto/remote_execution"
@@ -1175,14 +1175,13 @@ func (r *CommandRunner) sendPersistentWorkRequest(ctx context.Context, command *
 
 	// Collect all of the input digests
 	for path, digest := range r.Workspace.Inputs {
-		digestBuffer := proto.NewBuffer( /* buf */ nil)
-		err := digestBuffer.Marshal(digest)
+		digestBytes, err := proto.Marshal(digest)
 		if err != nil {
 			result.Error = status.WrapError(err, "marshalling input digest")
 			return result
 		}
 		requestProto.Inputs = append(requestProto.Inputs, &wkpb.Input{
-			Digest: digestBuffer.Bytes(),
+			Digest: digestBytes,
 			Path:   path,
 		})
 	}
@@ -1212,29 +1211,33 @@ func (r *CommandRunner) sendPersistentWorkRequest(ctx context.Context, command *
 func (r *CommandRunner) marshalWorkRequest(requestProto *wkpb.WorkRequest, writer io.Writer) error {
 	protocol := r.PlatformProperties.PersistentWorkerProtocol
 	if protocol == workerProtocolJSONValue {
-		marshaler := jsonpb.Marshaler{EmitDefaults: true}
-		if err := marshaler.Marshal(writer, requestProto); err != nil {
+		marshaler := &protojson.MarshalOptions{EmitUnpopulated: true}
+		out, err := marshaler.Marshal(requestProto)
+		if err != nil {
 			return err
 		}
-		_, err := fmt.Fprintf(writer, "\n")
+		_, err = fmt.Fprintf(writer, "%s\n", string(out))
 		return err
 	}
 	if protocol != "" && protocol != workerProtocolProtobufValue {
 		return status.FailedPreconditionErrorf("unsupported persistent worker type %s", protocol)
 	}
-	buf := proto.NewBuffer( /* buf */ nil)
-	if err := buf.EncodeMessage(requestProto); err != nil {
+	out, err := proto.Marshal(requestProto)
+	if err != nil {
 		return err
 	}
-	_, err := writer.Write(buf.Bytes())
+	_, err = writer.Write(out)
 	return err
 }
 
 func (r *CommandRunner) unmarshalWorkResponse(responseProto *wkpb.WorkResponse, reader io.Reader) error {
 	protocol := r.PlatformProperties.PersistentWorkerProtocol
 	if protocol == workerProtocolJSONValue {
-		unmarshaller := jsonpb.Unmarshaler{AllowUnknownFields: true}
-		return unmarshaller.UnmarshalNext(r.jsonDecoder, responseProto)
+		raw := json.RawMessage{}
+		if err := r.jsonDecoder.Decode(&raw); err != nil {
+			return err
+		}
+		return (&protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(raw, responseProto)
 	}
 	if protocol != "" && protocol != workerProtocolProtobufValue {
 		return status.FailedPreconditionErrorf("unsupported persistent worker type %s", protocol)

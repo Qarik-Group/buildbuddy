@@ -1,7 +1,6 @@
 package static
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"html/template"
@@ -18,7 +17,7 @@ import (
 	"github.com/buildbuddy-io/buildbuddy/server/environment"
 	"github.com/buildbuddy-io/buildbuddy/server/util/status"
 	"github.com/buildbuddy-io/buildbuddy/server/version"
-	"github.com/golang/protobuf/jsonpb"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	cfgpb "github.com/buildbuddy-io/buildbuddy/proto/config"
 )
@@ -170,15 +169,15 @@ func serveIndexTemplate(env environment.Env, tpl *template.Template, version str
 		TestGridV2Enabled:             *testGridV2Enabled,
 	}
 
-	configJSON := &bytes.Buffer{}
-	if err := (&jsonpb.Marshaler{}).Marshal(configJSON, &config); err != nil {
+	configJSON, err := protojson.Marshal(&config)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	err := tpl.ExecuteTemplate(w, indexTemplateFilename, &FrontendTemplateData{
+	err = tpl.ExecuteTemplate(w, indexTemplateFilename, &FrontendTemplateData{
 		JsEntryPointPath: jsPath,
 		GaEnabled:        !*disableGA,
-		Config:           template.JS(configJSON.String()),
+		Config:           template.JS(configJSON),
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

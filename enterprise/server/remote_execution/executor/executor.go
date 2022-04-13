@@ -27,16 +27,14 @@ import (
 	"github.com/buildbuddy-io/buildbuddy/server/util/status"
 	"github.com/buildbuddy-io/buildbuddy/server/util/tracing"
 	"github.com/buildbuddy-io/buildbuddy/server/util/uuid"
-	"github.com/golang/protobuf/ptypes"
 	"github.com/prometheus/client_golang/prometheus"
 
 	espb "github.com/buildbuddy-io/buildbuddy/proto/execution_stats"
 	repb "github.com/buildbuddy-io/buildbuddy/proto/remote_execution"
-	durationpb "github.com/golang/protobuf/ptypes/duration"
-	timestamppb "github.com/golang/protobuf/ptypes/timestamp"
-	tspb "github.com/golang/protobuf/ptypes/timestamp"
 	gcodes "google.golang.org/grpc/codes"
 	gstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -114,14 +112,8 @@ func (s *Executor) Warmup() {
 	s.runnerPool.WarmupImages()
 }
 
-func diffTimestamps(startPb, endPb *tspb.Timestamp) time.Duration {
-	start, _ := ptypes.Timestamp(startPb)
-	end, _ := ptypes.Timestamp(endPb)
-	return end.Sub(start)
-}
-
-func diffTimestampsToProto(startPb, endPb *tspb.Timestamp) *durationpb.Duration {
-	return ptypes.DurationProto(diffTimestamps(startPb, endPb))
+func diffTimestamps(startPb, endPb *timestamppb.Timestamp) time.Duration {
+	return endPb.AsTime().Sub(startPb.AsTime())
 }
 
 func logActionResult(taskID string, md *repb.ExecutedActionMetadata) {
@@ -145,10 +137,7 @@ func parseTimeout(timeout *durationpb.Duration, maxDuration time.Duration) (time
 		}
 		return maxDuration, nil
 	}
-	requestDuration, err := ptypes.Duration(timeout)
-	if err != nil {
-		return 0, status.InvalidArgumentErrorf("Unparsable timeout: %s", err.Error())
-	}
+	requestDuration := timeout.AsDuration()
 	if maxDuration != 0 && requestDuration > maxDuration {
 		return 0, status.InvalidArgumentErrorf("Specified timeout (%s) longer than allowed maximum (%s).", requestDuration, maxDuration)
 	}
@@ -203,7 +192,7 @@ func (s *Executor) ExecuteTaskAndStreamResults(ctx context.Context, task *repb.E
 	md := &repb.ExecutedActionMetadata{
 		Worker:               s.hostID,
 		QueuedTimestamp:      task.QueuedTimestamp,
-		WorkerStartTimestamp: ptypes.TimestampNow(),
+		WorkerStartTimestamp: timestamppb.Now(),
 		ExecutorId:           s.id,
 	}
 
@@ -233,7 +222,7 @@ func (s *Executor) ExecuteTaskAndStreamResults(ctx context.Context, task *repb.E
 		go s.runnerPool.TryRecycle(r, finishedCleanly)
 	}()
 
-	md.InputFetchStartTimestamp = ptypes.TimestampNow()
+	md.InputFetchStartTimestamp = timestamppb.Now()
 
 	rootInstanceDigest := digest.NewResourceName(
 		task.GetAction().GetInputRootDigest(),
@@ -289,12 +278,12 @@ func (s *Executor) ExecuteTaskAndStreamResults(ctx context.Context, task *repb.E
 			}
 		}
 	}
-	md.InputFetchCompletedTimestamp = ptypes.TimestampNow()
+	md.InputFetchCompletedTimestamp = timestamppb.Now()
 
 	if err := stateChangeFn(repb.ExecutionStage_EXECUTING, operation.InProgressExecuteResponse()); err != nil {
 		return true, err
 	}
-	md.ExecutionStartTimestamp = ptypes.TimestampNow()
+	md.ExecutionStartTimestamp = timestamppb.Now()
 	maxDuration := infiniteDuration
 	if currentDeadline, ok := ctx.Deadline(); ok {
 		maxDuration = currentDeadline.Sub(time.Now())
@@ -351,8 +340,8 @@ func (s *Executor) ExecuteTaskAndStreamResults(ctx context.Context, task *repb.E
 	ctx, cancel = background.ExtendContextForFinalization(ctx, uploadDeadlineExtension)
 	defer cancel()
 
-	md.ExecutionCompletedTimestamp = ptypes.TimestampNow()
-	md.OutputUploadStartTimestamp = ptypes.TimestampNow()
+	md.ExecutionCompletedTimestamp = timestamppb.Now()
+	md.OutputUploadStartTimestamp = timestamppb.Now()
 
 	actionResult := &repb.ActionResult{}
 	actionResult.ExitCode = int32(cmdResult.ExitCode)
@@ -361,8 +350,8 @@ func (s *Executor) ExecuteTaskAndStreamResults(ctx context.Context, task *repb.E
 	if err != nil {
 		return finishWithErrFn(status.UnavailableErrorf("Error uploading outputs: %s", err.Error()))
 	}
-	md.OutputUploadCompletedTimestamp = ptypes.TimestampNow()
-	md.WorkerCompletedTimestamp = ptypes.TimestampNow()
+	md.OutputUploadCompletedTimestamp = timestamppb.Now()
+	md.WorkerCompletedTimestamp = timestamppb.Now()
 	actionResult.ExecutionMetadata = md
 
 	// If the action failed or do_not_cache is set, upload information about the error via a failed
@@ -441,19 +430,11 @@ func incompleteExecutionError(exitCode int, err error) error {
 }
 
 func observeStageDuration(groupID string, stage string, start *timestamppb.Timestamp, end *timestamppb.Timestamp) {
-	startTime, err := ptypes.Timestamp(start)
-	if err != nil {
-		log.Warningf("Could not parse timestamp for '%s' stage: %s", stage, err)
-		return
-	}
+	startTime := start.AsTime()
 	if startTime.IsZero() {
 		return
 	}
-	endTime, err := ptypes.Timestamp(end)
-	if err != nil {
-		log.Warningf("Could not parse timestamp for '%s' stage: %s", stage, err)
-		return
-	}
+	endTime := end.AsTime()
 	if endTime.IsZero() {
 		return
 	}

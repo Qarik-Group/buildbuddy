@@ -10,7 +10,7 @@ go_library(
         "//proto:command_line_go_proto",
         "//server/environment",
         "//server/util/git",
-        "@com_github_golang_protobuf//proto:go_default_library",
+        "@org_golang_google_protobuf//encoding/prototext",
     ],
 )
 
