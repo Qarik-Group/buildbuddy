@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/buildbuddy-io/buildbuddy/server/interfaces"
+	"github.com/buildbuddy-io/buildbuddy/server/util/alert"
 	"github.com/buildbuddy-io/buildbuddy/server/util/log"
 	"github.com/buildbuddy-io/buildbuddy/server/util/status"
 
@@ -240,22 +241,38 @@ func ExitCode(ctx context.Context, cmd *exec.Cmd, err error) (int, error) {
 		return NoExitCode, status.UnavailableError(err.Error())
 	}
 
-	exitCode := processState.ExitCode()
-
 	// TODO(bduffany): Extract syscall.WaitStatus from exitErr.Sys(), and set
 	// ErrSIGKILL if waitStatus.Signal() == syscall.SIGKILL, so that the command
 	// can be retried if it was OOM killed. Note that KilledExitCode does not
 	// imply that SIGKILL was received.
 
-	if exitCode == KilledExitCode {
-		if dl, ok := ctx.Deadline(); ok && time.Now().After(dl) {
-			return exitCode, status.DeadlineExceededErrorf("Command timed out: %s", err.Error())
+	if dl, ok := ctx.Deadline(); ok && time.Now().After(dl) {
+		return NoExitCode, status.DeadlineExceededErrorf("Command timed out: %s", err.Error())
+	}
+	ws, ok := exitErr.Sys().(syscall.WaitStatus)
+	// If we can't determine the wait status, return an error.
+	if !ok {
+		return NoExitCode, status.InternalErrorf("could not determine wait() status")
+	}
+	// Commands can be terminated by one of: stopped, signaled, or exited.
+	if ws.Stopped() {
+		return NoExitCode, status.AbortedErrorf("command was stopped")
+	}
+	if ws.Signaled() {
+		// All other signals are unexpected (for now), make sure we return a
+		// retriable error. For SIGKILL, provide a more helpful error, since the
+		// most likely culprit is OOM.
+		if ws.Signal() == syscall.SIGKILL {
+			return NoExitCode, ErrSIGKILL
 		}
-		// If the command didn't time out, it was probably killed by the kernel due to OOM.
-		return exitCode, status.ResourceExhaustedErrorf("Command `%s` was killed: %s", cmd.String(), err.Error())
+		return NoExitCode, status.AbortedErrorf("command was terminated by signal: %s", ws.Signal())
+	}
+	if ws.Exited() {
+		return ws.ExitStatus(), nil
 	}
 
-	return exitCode, nil
+	alert.UnexpectedEvent("unhandled_wait_status", "process wait() status returned unexpected value %d", ws)
+	return NoExitCode, status.InternalErrorf("process wait() status returned unexpected value %d", ws)
 }
 
 // EnvStringList returns the command's environment variables as a list of string

@@ -27,10 +27,6 @@ const (
 	// UNAUTHENTICATED errors:
 	// https://cs.github.com/bazelbuild/bazel/blob/93677c68f0bc688dbfa75484688160cdbdae7328/src/main/java/com/google/devtools/build/lib/remote/util/Utils.java#L519
 	bazelRemoteRetries = 2
-
-	// The number of times that the scheduler will retry. This should match
-	// the const with the same name in scheduler_server.go
-	schedulerMaxTaskAttemptCount = 5
 )
 
 func TestSimpleAction_Exit0(t *testing.T) {
@@ -65,8 +61,9 @@ func TestSimpleAction_TerminateWithSIGKILL(t *testing.T) {
 	require.Error(t, res.Error)
 	assert.Contains(t, res.Stderr, "User debug message to help diagnose OOM")
 	// SIGKILL usually happens due to OOM, so make sure these are retried
-	assert.Contains(t, res.Stderr, "Resource Exhausted")
-	assert.Contains(t, res.Stderr, "signal: killed")
+	assert.Contains(
+		t, res.Stderr,
+		"Unavailable: command was terminated by SIGKILL, likely due to executor shutdown or OOM")
 	assert.Equal(t, 1+bazelRemoteRetries, tasksStarted(t))
 }
 
@@ -166,12 +163,40 @@ func TestUnauthenticatedError_RetriedOnce(t *testing.T) {
 	assert.Equal(t, 2, tasksStarted(t))
 }
 
-func TestExecutorShutdown_Retried(t *testing.T) {
+func TestTransientExecutorShutdown_Retried(t *testing.T) {
 	env := rbetest.NewRBETestEnv(t)
 	env.AddBuildBuddyServer()
 	// TODO(bduffany): Simplify executor shutdown logic across runner types and
 	// remove reliance on ErrSIGKILL here
 	errResult := commandutil.ErrorResult(commandutil.ErrSIGKILL)
+	env.AddExecutorWithOptions(&rbetest.ExecutorOptions{
+		RunInterceptor: rbetest.ReturnForFirstAttempt(errResult),
+	})
+	// observe initial count so that we can get the diff at the end of the test
+	_ = tasksStarted(t)
+	ctx := context.Background()
+
+	res := runRemoteShellActionViaBazel(t, ctx, env, `
+		echo >&2 THIS_MSG_SHOULD_APPEAR_IN_BAZEL_STDERR
+		exit 0
+	`)
+
+	require.NoError(t, res.Error)
+	assert.NotContains(t, res.Stderr, "SIGKILL")
+	assert.Equal(t, 2, tasksStarted(t))
+	assert.Contains(t, res.Stderr, "THIS_MSG_SHOULD_APPEAR_IN_BAZEL_STDERR")
+}
+
+// Note: This test scenario should almost never happen -- it would require a
+// task to get very unlucky during a scaledown, getting re-assigned to an
+// executor that is about to be shutdown every time it is retried.
+func TestPersistentExecutorShutdown_Retried(t *testing.T) {
+	env := rbetest.NewRBETestEnv(t)
+	env.AddBuildBuddyServer()
+	// TODO(bduffany): Simplify executor shutdown logic across runner types and
+	// remove reliance on ErrSIGKILL here
+	errResult := commandutil.ErrorResult(commandutil.ErrSIGKILL)
+	errResult.Stderr = []byte("THIS_MSG_SHOULD_APPEAR_IN_BAZEL_STDERR")
 	env.AddExecutorWithOptions(&rbetest.ExecutorOptions{
 		RunInterceptor: rbetest.AlwaysReturn(errResult),
 	})
@@ -179,21 +204,31 @@ func TestExecutorShutdown_Retried(t *testing.T) {
 	_ = tasksStarted(t)
 	ctx := context.Background()
 
-	res := runRemoteShellActionViaBazel(t, ctx, env, `
-		echo THIS_MSG_SHOULD_APPEAR_IN_BAZEL_STDERR >&2
-		exit 0
-	`)
+	res := runRemoteShellActionViaBazel(t, ctx, env, "")
 
 	require.Error(t, res.Error)
 	assert.Contains(
 		t, res.Stderr,
 		"command was terminated by SIGKILL, likely due to executor shutdown or OOM")
-	// TODO(bduffany): Fail faster. Currently, these get retried by both the
-	// scheduler and Bazel, where each bazel attempt results in 5 scheduler
-	// attempts.
-	assert.Equal(t, (1+bazelRemoteRetries)*schedulerMaxTaskAttemptCount, tasksStarted(t))
-	// TODO(bduffany): Ensure that we get partial debug output in this case
-	// assert.Contains(t, res.Stderr, "THIS_MSG_SHOULD_APPEAR_IN_BAZEL_STDERR")
+	assert.Equal(t, (1 + bazelRemoteRetries), tasksStarted(t))
+	assert.Contains(t, res.Stderr, "THIS_MSG_SHOULD_APPEAR_IN_BAZEL_STDERR")
+}
+
+func TestTransientCacheNotFoundError_Retried(t *testing.T) {
+	env := rbetest.NewRBETestEnv(t)
+	env.AddBuildBuddyServer()
+	errResult := commandutil.ErrorResult(status.NotFoundError("not found"))
+	env.AddExecutorWithOptions(&rbetest.ExecutorOptions{
+		RunInterceptor: rbetest.ReturnForFirstAttempt(errResult),
+	})
+	// observe initial count so that we can get the diff at the end of the test
+	_ = tasksStarted(t)
+	ctx := context.Background()
+
+	res := runRemoteShellActionViaBazel(t, ctx, env, "exit 0")
+
+	require.NoError(t, res.Error)
+	assert.Equal(t, 2, tasksStarted(t), "transient NotFound errors should be retried")
 }
 
 func TestActionWithContainerImage_InvalidArgument(t *testing.T) {
@@ -202,17 +237,16 @@ func TestActionWithContainerImage_InvalidArgument(t *testing.T) {
 
 	res := runRemoteShellActionViaBazel(
 		t, ctx, env, "exit 0",
-		"--remote_default_exec_properties=container-image=INVALID")
+		"--remote_default_exec_properties=container-image=docker://busybox")
 
 	require.Error(t, res.Error)
-	assert.Contains(t, res.Stderr, "InvalidArgument")
-	// TODO(bduffany): Fail faster. Currently, these get retried by both the
-	// scheduler and Bazel, where each bazel attempt results in 5 scheduler
-	// attempts.
-	assert.Equal(t, (1+bazelRemoteRetries)*(schedulerMaxTaskAttemptCount), tasksStarted(t))
+	assert.Contains(
+		t, res.Stderr,
+		"Invalid Argument: error creating runner for command: Container images are not supported by this executor.")
+	assert.Equal(t, 1, tasksStarted(t))
 }
 
-func TestActionWithRunnerRecycling_Unauthenticated(t *testing.T) {
+func TestActionWithRunnerRecycling_InvalidArgument(t *testing.T) {
 	env := setup(t)
 	ctx := context.Background()
 
@@ -223,13 +257,10 @@ func TestActionWithRunnerRecycling_Unauthenticated(t *testing.T) {
 		"--remote_default_exec_properties=recycle-runner=true")
 
 	require.Error(t, res.Error)
-	// TODO(bduffany): return Unauthenticated here, not Unavailable
-	assert.Contains(t, res.Stderr, "Unavailable")
-	assert.Contains(t, res.Stderr, "runner recycling is not supported for anonymous builds")
-	// TODO(bduffany): Fail faster. Currently, these get retried by both the
-	// scheduler and Bazel, where each bazel attempt results in 5 scheduler
-	// attempts.
-	assert.Equal(t, (1+bazelRemoteRetries)*(schedulerMaxTaskAttemptCount), tasksStarted(t))
+	assert.Contains(
+		t, res.Stderr,
+		"Invalid Argument: error creating runner for command: runner recycling is not supported for anonymous builds")
+	assert.Equal(t, 1, tasksStarted(t))
 }
 
 func setup(t *testing.T) *rbetest.Env {
