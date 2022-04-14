@@ -113,7 +113,13 @@ func (s *Executor) Warmup() {
 }
 
 func diffTimestamps(startPb, endPb *timestamppb.Timestamp) time.Duration {
-	return endPb.AsTime().Sub(startPb.AsTime())
+	start := startPb.AsTime()
+	end := endPb.AsTime()
+	return end.Sub(start)
+}
+
+func diffTimestampsToProto(startPb, endPb *timestamppb.Timestamp) *durationpb.Duration {
+	return durationpb.New(diffTimestamps(startPb, endPb))
 }
 
 func logActionResult(taskID string, md *repb.ExecutedActionMetadata) {
